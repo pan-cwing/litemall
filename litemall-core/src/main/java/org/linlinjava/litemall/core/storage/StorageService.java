@@ -46,6 +46,7 @@ public class StorageService {
     public LitemallStorage store(InputStream inputStream, long contentLength, String contentType, String fileName) {
         String key = generateKey(fileName);
         storage.store(inputStream, contentLength, contentType, key);
+        System.out.println(storage.getClass());
 
         String url = generateUrl(key);
         LitemallStorage storageInfo = new LitemallStorage();

@@ -50,6 +50,7 @@ public class AdminStorageController {
         String originalFilename = file.getOriginalFilename();
         LitemallStorage litemallStorage = storageService.store(file.getInputStream(), file.getSize(),
                 file.getContentType(), originalFilename);
+        System.out.println(litemallStorage.getUrl());
         return ResponseUtil.ok(litemallStorage);
     }
 

@@ -34,6 +34,13 @@ module.exports = {
     overlay: {
       warnings: false,
       errors: true
+    },
+    proxy: {
+      '/admin': {
+        target: 'http://api.jiaoyibei.com/admin',
+        ws: true,
+        changeOrigin: true
+      }
     }
   },
   configureWebpack: {

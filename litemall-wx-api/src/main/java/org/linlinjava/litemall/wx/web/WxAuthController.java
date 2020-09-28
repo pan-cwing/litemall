@@ -3,6 +3,10 @@ package org.linlinjava.litemall.wx.web;
 import cn.binarywang.wx.miniapp.api.WxMaService;
 import cn.binarywang.wx.miniapp.bean.WxMaJscode2SessionResult;
 import cn.binarywang.wx.miniapp.bean.WxMaPhoneNumberInfo;
+import com.alibaba.fastjson.JSONObject;
+import io.jsonwebtoken.*;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.linlinjava.litemall.core.notify.NotifyService;
@@ -19,15 +23,25 @@ import org.linlinjava.litemall.wx.annotation.LoginUser;
 import org.linlinjava.litemall.wx.dto.UserInfo;
 import org.linlinjava.litemall.wx.dto.UserToken;
 import org.linlinjava.litemall.wx.dto.WxLoginInfo;
+import org.linlinjava.litemall.wx.model.AppleKeys;
+import org.linlinjava.litemall.wx.model.HttpResult;
+import org.linlinjava.litemall.wx.model.Keys;
 import org.linlinjava.litemall.wx.service.CaptchaCodeManager;
 import org.linlinjava.litemall.wx.service.UserTokenManager;
 import org.linlinjava.litemall.core.util.IpUtil;
+import org.linlinjava.litemall.wx.util.HttpClientUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletRequest;
+import java.math.BigInteger;
+import java.security.KeyFactory;
+import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.RSAPublicKeySpec;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -41,6 +55,7 @@ import static org.linlinjava.litemall.wx.util.WxResponseCode.*;
 @RestController
 @RequestMapping("/wx/auth")
 @Validated
+@Slf4j
 public class WxAuthController {
     private final Log logger = LogFactory.getLog(WxAuthController.class);
 
@@ -55,6 +70,8 @@ public class WxAuthController {
 
     @Autowired
     private CouponAssignService couponAssignService;
+
+    private Jws<Claims> claims;
 
     /**
      * 账号登录
@@ -556,4 +573,123 @@ public class WxAuthController {
 
         return ResponseUtil.ok(data);
     }
+
+
+    @PostMapping(value = "/appleVerify")
+    @ResponseBody
+    public HttpResult appleVerify(@RequestParam("jwt") final String jwt, @RequestParam("aud") final String aud,
+                                  @RequestParam("sub") final String sub) {
+
+        final HttpResult httpResult = new HttpResult();
+
+        if (org.apache.commons.lang.StringUtils.isEmpty(jwt) || org.apache.commons.lang.StringUtils.isEmpty(aud) || org.apache.commons.lang.StringUtils.isEmpty(sub)) {
+            httpResult.setCode(0);
+            httpResult.setMsg("Param Error");
+            return httpResult;
+        }
+
+        Integer result = -1;
+
+        final String url = "https://appleid.apple.com/auth/keys";
+        final String jsonData = HttpClientUtil.httpGetRequest(url);
+        final AppleKeys appleKeys = JSONObject.parseObject(jsonData, AppleKeys.class); // 将json字符串转化为JSONObject
+
+        String n = "";
+        String ee = "";
+
+        if (appleKeys.getKeys().size() > 0) {
+            // 获得jsonArray的第一个元素
+            final Keys keys = appleKeys.getKeys().get(1);
+
+            n = keys.getN();
+            ee = keys.getE();
+
+            log.info("[苹果登录日志]jwt:{},aud:{},sub:{}", jwt, aud, sub);
+        }
+
+        try {
+            final PublicKey kPublicKey = createPublicKey(n, ee);
+
+            result = verify(kPublicKey, jwt, aud, sub);
+
+            if (result == 1) {
+                httpResult.setCode(100);
+                httpResult.setMsg("success");
+                httpResult.setData(claims);
+            } else {
+                httpResult.setCode(result);
+                httpResult.setMsg("fail");
+            }
+
+            // log.info("获取公钥结果:" + result + ";" + kPublicKey.toString());
+        } catch (final NoSuchAlgorithmException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        } catch (final InvalidKeySpecException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
+
+        return httpResult;
+    }
+
+    public RSAPublicKeySpec build(final String n, final String e) {
+        final BigInteger modulus = new BigInteger(1, Base64.decodeBase64(n));
+        final BigInteger publicExponent = new BigInteger(1, Base64.decodeBase64(e));
+        return new RSAPublicKeySpec(modulus, publicExponent);
+    }
+
+    public int verify(final PublicKey key, final String jwt, final String audience, final String subject) {
+        final JwtParser jwtParser = Jwts.parser().setSigningKey(key);
+        jwtParser.requireIssuer("https://appleid.apple.com");
+        jwtParser.requireAudience(audience);
+        jwtParser.requireSubject(subject);
+        try {
+            final Jws<Claims> claim = jwtParser.parseClaimsJws(jwt);
+
+            if (claim != null && claim.getBody().containsKey("auth_time")) {
+
+                claims = claim;
+
+                log.info("[Apple登录解密结果]header:{},body:{},signature:{}", claim.getHeader(), claim.getBody(),
+                        claim.getSignature());
+
+                return 1;
+            }
+            return 0;
+        } catch (final ExpiredJwtException e) {
+            log.error("apple identityToken expired");
+            return -1;
+        } catch (final Exception e) {
+            log.error("apple identityToken illegal");
+            e.printStackTrace();
+            return -2;
+        }
+    }
+
+    /**
+     * 从hex string生成公钥
+     *
+     * @param stringN
+     * @param stringE
+     * @return 构造好的公钥
+     * @throws NoSuchAlgorithmException
+     * @throws InvalidKeySpecException
+     */
+    public static PublicKey createPublicKey(final String stringN, final String stringE)
+            throws NoSuchAlgorithmException, InvalidKeySpecException {
+
+        // BigInteger N = new BigInteger(stringN, 16); // hex base
+        // BigInteger E = new BigInteger(stringE, 16); // hex base
+
+        final BigInteger modulus = new BigInteger(1, Base64.decodeBase64(stringN));
+        final BigInteger publicExponent = new BigInteger(1, Base64.decodeBase64(stringE));
+
+        final RSAPublicKeySpec spec = new RSAPublicKeySpec(modulus, publicExponent);
+        final KeyFactory kf = KeyFactory.getInstance("RSA");
+        System.out.println(kf.generatePublic(spec));
+        return kf.generatePublic(spec);
+
+    }
+
 }
